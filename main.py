@@ -446,6 +446,23 @@ def main(page: ft.Page):
                 print(f"🔒 Quarantined (Local Folder): {filepath} -> {dest_path}")
             except Exception as e:
                 print(f"Quarantine Move Error: {e}")
+                
+                # ACTIVE REMEDIATION: Handle "File in Use" / Running Virus
+                if "used by another process" in str(e) or "WinError 32" in str(e):
+                    print(f"⚠️ Threat is RUNNING! Attempting to kill: {filename}")
+                    try:
+                        # Force kill the process by name
+                        import subprocess
+                        subprocess.run(f'taskkill /F /IM "{filename}"', shell=True, timeout=3)
+                        time.sleep(1) # Allow Windows to release the file lock
+                        
+                        # Retrying Quarantine
+                        shutil.move(filepath, dest_path)
+                        print(f"💀 Process Killed & Quarantined: {filepath}")
+                        return
+                    except Exception as k_err:
+                        print(f"Kill Failed: {k_err}")
+
                 # Fallback: In-place rename if folder creation fails
                 try:
                     os.rename(filepath, filepath + ".locked")
