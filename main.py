@@ -336,6 +336,7 @@ def main(page: ft.Page):
             user_home = os.path.expanduser("~")
             monitored_paths = [
                 os.path.join(user_home, "Downloads"),
+                os.path.join(user_home, "Desktop"),
                 os.path.join(user_home, "Documents"),
                 os.path.join(user_home, "Pictures")
             ]
