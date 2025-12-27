@@ -19,26 +19,22 @@ except ImportError:
 class ThreatEngine:
     def __init__(self, rules_path='yara_rules.yar'):
         self.rules = None
-        # Expanded Whitelist
+        # Expanded Whitelist (Process Names)
         self.whitelist = [
             'chrome.exe', 'explorer.exe', 'svchost.exe', 'firefox.exe',
             'wix', 'msbuild', 'python', 'pip', 'node', 'git', 'visual studio',
-            'nvidia', 'amd', 'intel', 'setup', 'installer'
+            'nvidia', 'amd', 'intel', 'setup', 'installer', 'postgres', 'pg_ctl',
+            'java', 'jdk', 'jre', 'android', 'studio64', 'adb', 'emulator',
+            'dart', 'flutter', 'code', 'cursor', 'antigravity', 'fd', 'rg', 'bat'
         ]
         
-        # Initialize YARA
-        if HAS_YARA:
-            if os.path.exists(rules_path):
-                try:
-                    self.rules = yara.compile(filepath=rules_path)
-                    print(f"✅ YARA Rules Loaded: {rules_path}")
-                except Exception as e:
-                    print(f"⚠️ YARA Error: {e}")
-            else:
-                print(f"⚠️ YARA Rules not found at {rules_path}")
-        else:
-            print("⚠️ YARA module not installed. Content scanning limited.")
-
+        # Whitelisted Paths (Developer Tools & System)
+        self.safe_paths = [
+            r'Windows\System32', r'Program Files', r'Program Files (x86)',
+            r'Android\Android Studio', r'PostgreSQL', r'Microsoft VS Code',
+            r'Antigravity', r'Flutter', r'Dart'
+        ]
+        
     def scan_file(self, filepath):
         """
         Deep Scan a single file using Hybrid Analysis (Metadata + Content + Rules).
@@ -58,29 +54,41 @@ class ThreatEngine:
             # 1. METADATA ANALYSIS (Fast)
             # ---------------------------
             filename = os.path.basename(filepath).lower()
-            
-            # Whitelist Check (Fast Pass)
-            if any(safe in filename for safe in self.whitelist):
-                # APK exception: APKs are never fully whitelisted if they are truly malicious, 
-                # but for simplicity in this engine, we allow whitelisted tools to pass.
-                # If you want Strict APK quarantine, uncomment the next line:
-                # if not filename.endswith('.apk'): return result
-                return result
-            
-            # Extension Risk
+            file_path_lower = filepath.lower()
+
+            # USER POLICY: Zero Tolerance for APKs on Windows
+            # We check this FIRST. If it is an APK, we do NOT whitelist it, even if it is in a "Safe Path".
             if filename.endswith('.apk'):
                 result['score'] += 100
                 result['details'].append("Critical: Unauthorized APK Package")
-            elif filename.endswith(('.scr', '.bat', '.ps1', '.vbs')):
+                # We can return 'result' later, allowing further analysis if needed, 
+                # but with +100 score it is already Critical.
+                # proceed to Entropy check? No need.
+            
+            else:
+                # Global Whitelist: Skip known Safe Paths (ONLY for non-APKs)
+                # This protects postgres.exe, studio.bat, node.exe etc.
+                if any(sp.lower() in file_path_lower for sp in self.safe_paths):
+                    return result
+
+                # Whitelist Check (Filename) for tools in random paths
+                if any(safe in filename for safe in self.whitelist):
+                    return result
+            
+            # Extension Risk (Non-APK)
+            if filename.endswith(('.scr', '.bat', '.ps1', '.vbs')):
+                # Only penalize if NOT in a safe path (already checked above)
                 result['score'] += 20
             elif filename.endswith('.exe'):
-                result['score'] += 10 # Reduced from 20 for standard EXEs
+                # Standard EXE - No penalty by default, rely on YARA/PE
+                pass
             
             # Entropy (Randomness) Check
             entropy = self._get_entropy(filepath)
             if entropy > 7.2:
                 # Installers often have high entropy, so we only add points if it's not a common installer name
-                if not any(x in filename for x in ['setup', 'install', 'update']):
+                # AND it's an executable (don't flag random data files that passed filter)
+                if filename.endswith(('.exe', '.dll', '.sys')) and not any(x in filename for x in ['setup', 'install', 'update']):
                     result['score'] += 20 # Reduced from 30
                     result['details'].append(f"High Entropy ({entropy:.2f})")
 

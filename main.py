@@ -232,35 +232,75 @@ def main(page: ft.Page):
             nonlocal scan_running
             # ADAPTATION: Use Windows paths or user home
             user_home = os.path.expanduser("~")
+            
+            # Detect all available drives for Manual Scan (C:\, F:\, etc.)
+            drives = []
+            import string
+            for letter in string.ascii_uppercase:
+                root = f"{letter}:\\"
+                # Check if drive exists
+                if os.path.exists(root):
+                    drives.append(root)
+
             paths = [
                 os.path.join(user_home, "Downloads"),
                 os.path.join(user_home, "Desktop"),
                 os.path.join(user_home, "Documents"),
                 os.path.join(user_home, "Pictures"),
                 os.path.join(os.getenv('TEMP'), '') if os.getenv('TEMP') else "C:\\Temp"
-            ]
+            ] + drives # CRITICAL: Scan the roots of F:\, C:\ etc. to catch user placed files
             all_files = []
             
             # Dangerous Extensions only (Protect User Data)
-            # We explicitly SKIP .pdf, .jpg, .png etc by only including these:
-            dangerous_exts = ('.exe', '.msi', '.apk', '.bat', '.ps1', '.vbs', '.scr', '.com', '.dll', '.js')
+            # REMOVED .dll to reduce file count (User Request for optimization).
+            # DLLs are libraries and rarely primary threats for end-users compared to EXEs/APKs.
+            dangerous_exts = ('.exe', '.msi', '.apk', '.bat', '.ps1', '.vbs', '.scr')
 
-            for path in paths:
-                if not os.path.exists(path): continue
+            # OPTIMIZATION: Skip System & Heavy Dev Folders to speed up initialization
+            # Case-insensitive Set for proper matching on Windows
+            skip_dirs = {s.lower() for s in {
+                'Windows', 'Program Files', 'Program Files (x86)', 'ProgramData', 'Common Files',
+                'System Volume Information', '$RECYCLE.BIN', 'Config.Msi',
+                'node_modules', '.git', '.gradle', '.idea', 'Android', 'AppData', 'Library',
+                'Steam', 'Epic Games', 'Origin', 'Ubisoft'
+            }}
+
+            # Parallel File Discovery (The Fix for Slow Init)
+            # We scan each root path in a separate thread so C:\ doesn't block F:\
+            def collect_files_from_path(root_path):
+                local_files = []
+                if not os.path.exists(root_path): return []
                 try:
-                    for root, _, files in os.walk(path):
+                    for root, dirs, files in os.walk(root_path):
                         if not scan_running: break
+                        
+                        # Prune the search tree (Optimization)
+                        # Case-insensitive check
+                        dirs[:] = [d for d in dirs if d.lower() not in skip_dirs]
+                        
                         for f in files:
                             # 1. Skip CyberNova itself
                             if "cybernova" in f.lower(): continue
                             # 2. Skip already locked files
                             if f.endswith(".locked"): continue
-                            # 3. STRICT EXTENSION FILTER (User Request)
-                            # Only scan executables/scripts. Ignore PDFs, Images, etc.
+                            # 3. STRICT EXTENSION FILTER
                             if not f.lower().endswith(dangerous_exts): continue
                             
-                            all_files.append(os.path.join(root, f))
+                            local_files.append(os.path.join(root, f))
                 except: pass
+                return local_files
+
+            # Execute Discovery in Parallel (20 workers for finding files)
+            with concurrent.futures.ThreadPoolExecutor(max_workers=20) as discovery_executor:
+                future_to_path = {discovery_executor.submit(collect_files_from_path, p): p for p in paths}
+                for future in concurrent.futures.as_completed(future_to_path):
+                    if not scan_running: break
+                    try:
+                        all_files.extend(future.result())
+                        # Update UI incrementally during discovery
+                        status_text.value = f"Found {len(all_files)} files..."
+                        page.update()
+                    except: pass
             
             total_files = len(all_files)
             if total_files == 0:
@@ -276,10 +316,8 @@ def main(page: ft.Page):
             threats_found = 0
             details_log = []
             
-            # ADAPTATION: ThreatEngine.scan_file takes only current filepath.
-            # The map() was passing (fp, fn), but our engine only takes (filepath).
-            
-            with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+            # PERFORMANCE: Increased workers from 10 to 50 for faster scanning
+            with concurrent.futures.ThreadPoolExecutor(max_workers=50) as executor:
                 # ADAPTATION: Submit only filepath
                 futures = {executor.submit(threat_engine.scan_file, fp): fp for fp in all_files}
                 for future in concurrent.futures.as_completed(futures):
@@ -332,16 +370,26 @@ def main(page: ft.Page):
                 page.open(ft.SnackBar(ft.Text("Defense Disabled"), bgcolor="red400"))
 
         def shield_monitor():
-            # ADAPTATION: Monitor Docs and Pics too
+            # ADAPTATION: Monitor ALL Drives + User Folders (Max Coverage)
             user_home = os.path.expanduser("~")
+            
+            # Detect all available drives (C:\, D:\, E:\, etc.)
+            drives = []
+            import string
+            for letter in string.ascii_uppercase:
+                root = f"{letter}:\\"
+                if os.path.exists(root):
+                    drives.append(root)
+
             monitored_paths = [
                 os.path.join(user_home, "Downloads"),
                 os.path.join(user_home, "Desktop"),
                 os.path.join(user_home, "Documents"),
-                os.path.join(user_home, "Pictures")
-            ]
+                os.path.join(user_home, "Pictures"),
+                os.getcwd() # Monitor the App folder itself (for testing)
+            ] + drives # Add C:\, F:\, etc. to the list
             
-            dangerous_exts = ('.exe', '.msi', '.apk', '.bat', '.ps1', '.vbs', '.scr', '.com', '.dll', '.js')
+            dangerous_exts = ('.exe', '.msi', '.apk', '.bat', '.ps1', '.vbs', '.scr', '.com')
             
             last_state = {p: set(os.listdir(p)) for p in monitored_paths if os.path.exists(p)}
             while shield_active:
